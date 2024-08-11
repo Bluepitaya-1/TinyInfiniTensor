@@ -1,4 +1,9 @@
 #include "core/graph.h"
+#include "core/op_type.h"
+#include "core/runtime.h"
+#include "core/common.h"
+#include "operators/transpose.h"
+#include "operators/matmul.h"
 #include <algorithm>
 #include <numeric>
 #include <queue>
@@ -106,6 +111,114 @@ namespace infini
         // 1. 去除冗余的算子（例如，两个相邻的算子都是 transpose 算子，且做的是相反的操作，可以将其全部删除）
         // 2. 合并算子（例如，矩阵乘算子中含有属性transA、transB，如果其输入存在transpose，且对最后两个维度做交换，就可以将transpose融入到矩阵乘算子的属性中去）
         // =================================== 作业 ===================================
+
+        bool finished = false;
+        while (!finished)
+        {
+            finished = true;
+            for (auto &&prev : ops)
+            {
+                if (prev->type != OpType::Transpose)
+                    continue;
+                for (auto &&succ_w : prev->successors)
+                {
+                    auto succ = succ_w.lock();
+                    if (succ->type == OpType::Transpose)
+                    {
+                        auto tp_prev = as<TransposeObj>(prev);
+                        auto tp_succ = as<TransposeObj>(succ);
+
+                        if (tp_prev->getPermute() == tp_succ->getPermute())
+                        {
+                            finished = false;
+                            for (auto &&ss_w : succ->successors)
+                            {
+                                auto ss = ss_w.lock();
+
+                                for (auto &&ss_input : ss->inputs)
+                                {
+                                    if (ss_input == succ->outputs[0])
+                                    {
+                                        ss_input->removeTarget(ss);
+                                        removeTensor(ss_input);
+                                        ss_input = prev->inputs[0];
+                                        ss_input->removeTarget(prev);
+                                        ss_input->addTarget(ss);
+                                    }
+                                }
+                                ss->removePredecessors(succ);
+                                for (auto prev_old_prev_w : prev->predecessors)
+                                {
+                                    auto prev_old_prev = prev_old_prev_w.lock();
+                                    ss->addPredecessors(prev_old_prev);
+                                    prev_old_prev->removeSuccessors(prev);
+                                    prev_old_prev->addSuccessors(ss);
+                                }
+                            }
+                            for (auto &&prev_output : prev->outputs)
+                            {
+                                removeTensor(prev_output);
+                            }
+                            removeOperator(prev);
+                            removeOperator(succ);
+                            goto next_round;
+                        }
+                    }
+                    else if (succ->type == OpType::MatMul)
+                    {
+                        auto tp_prev = as<TransposeObj>(prev);
+                        auto mm_succ = as<MatmulObj>(succ);
+
+                        auto perm = tp_prev->getPermute();
+                        auto rank = perm.size();
+                        bool valid = true;
+                        for (size_t i = 0; i < rank - 2; i++)
+                        {
+                            if (perm[i] != static_cast<int>(i))
+                            {
+                                valid = false;
+                                break;
+                            }
+                        }
+                        valid = valid && (perm[rank - 2] == static_cast<int>(rank - 1)) && (perm[rank - 1] == static_cast<int>(rank - 2));
+                        if (!valid)
+                        {
+                            std::cout << "GGGGGGG\n";
+                            continue;
+                        }
+
+                        finished = false;
+                        mm_succ->removePredecessors(prev);
+                        for (auto &&prev_old_prev_w : tp_prev->predecessors)
+                        {
+                            auto prev_old_prev = prev_old_prev_w.lock();
+                            prev_old_prev->removeSuccessors(prev);
+                            prev_old_prev->addSuccessors(succ);
+                            mm_succ->addPredecessors(prev_old_prev);
+                        }
+                        for (auto &&succ_input : succ->inputs)
+                        {
+                            if (succ_input == prev->outputs[0])
+                            {
+                                if (succ_input == succ->inputs[0])
+                                    mm_succ->setTransA(!mm_succ->getTransA());
+                                if (succ_input == succ->inputs[1])
+                                    mm_succ->setTransB(!mm_succ->getTransB());
+                                succ_input = prev->inputs[0];
+                                succ_input->removeTarget(prev);
+                                succ_input->addTarget(succ);
+                            }
+                        }
+                        removeTensor(prev->outputs[0]);
+                        removeOperator(prev);
+                        goto next_round;
+                    }
+                }
+            }
+        next_round:
+        ;
+        // std::cout << "next!" << std::endl;
+        }
     }
 
     Tensor GraphObj::getTensor(int fuid) const
@@ -152,7 +265,14 @@ namespace infini
         // TODO：利用 allocator 给计算图分配内存
         // HINT: 获取分配好的内存指针后，可以调用 tensor 的 setDataBlob 函数给 tensor 绑定内存
         // =================================== 作业 ===================================
-
+        std::vector<size_t>bytes;
+        for (const auto& tensor : tensors) {
+            bytes.push_back(allocator.alloc(tensor->getBytes()));
+        }
+        int idx=0;
+        for (const auto& tensor : tensors) {
+            tensor->setDataBlob(make_ref<BlobObj>(runtime,allocator.getPtr()+bytes[idx++]));
+        }
         allocator.info();
     }
 

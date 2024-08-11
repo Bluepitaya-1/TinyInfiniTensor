@@ -32,8 +32,26 @@ namespace infini
         // =================================== 作业 ===================================
         // TODO: 设计一个算法来分配内存，返回起始地址偏移量
         // =================================== 作业 ===================================
-
-        return 0;
+        bool success=false;
+        size_t addr;
+        for (const auto& pair : free_block) 
+            if(pair.second>=size)
+            {
+                size_t remainder=pair.second-size;
+                size_t new_st=pair.first+size;
+                addr=pair.first;
+                free_block.erase(pair.first);
+                if(remainder>0)
+                    free_block[new_st]=remainder;
+                success=true;
+                break;
+            }
+        used+=size;
+        if(success)
+            return addr;
+        addr=peak;
+        peak+=size;
+        return addr;
     }
 
     void Allocator::free(size_t addr, size_t size)
@@ -44,6 +62,35 @@ namespace infini
         // =================================== 作业 ===================================
         // TODO: 设计一个算法来回收内存
         // =================================== 作业 ===================================
+        bool before=false,after=false;
+        if(addr+size==peak)
+            // 最后一节的释放单独处理，不放回free_block中
+            peak=addr;
+        else
+        {
+            free_block[addr]=size;
+            map<size_t,size_t>::iterator it=free_block.find(addr);
+            map<size_t,size_t>::iterator it2=std::next(it);
+            if(it2!=free_block.end())
+                if(addr+size==it2->first)
+                {
+                    free_block[addr]=size+it2->second;
+                    free_block.erase(it2);
+                }
+            if(it!=free_block.begin())
+            {
+                it2=it;
+                --it;
+                if(it->first+it->second==it2->first)
+                {
+                    free_block[it->first]=it->second+it2->second;
+                    free_block.erase(it2->first);
+                }
+
+            }
+        }
+            
+            
     }
 
     void *Allocator::getPtr()
